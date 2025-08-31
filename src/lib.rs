@@ -56,11 +56,11 @@
 //! # pass it to the node
 //! RUST_LOG=frameless=debug
 //! pba-omni-node \
-//! 	# the path to the runtime.
+//! 	# the path to the runtime. \
 //! 	--runtime ./target/release/wbuild/runtime/runtime.wasm \
-//! 	# ensures we spin up a new database each time.
+//! 	# ensures we spin up a new database each time. \
 //! 	--tmp \
-//! 	# tweak the blocktime, if you want.
+//! 	# tweak the blocktime, if you want. \
 //! 	--consensus manual-seal-1000
 //! ```
 //!
@@ -68,7 +68,7 @@
 //! now:
 //!
 //! ```text
-//! wscat -c 127.0.0.1:9944 -x '{"jsonrpc":"2.0", "id":1, "method":"state_getStorage", "params": ["76616c7565"] }`
+//! wscat -c 127.0.0.1:9944 -x '{"jsonrpc":"2.0", "id":1, "method":"state_getStorage", "params": ["76616c7565"] }'
 //! ```
 //!
 //! Or equivalently:
@@ -80,7 +80,7 @@
 //! Can you guess what is this?
 //!
 //! ```text
-//! wscat -c 127.0.0.1:9944 -x '{"jsonrpc":"2.0", "id":1, "method":"state_getStorage", "params": ["3a636f6465"] }
+//! wscat -c 127.0.0.1:9944 -x '{"jsonrpc":"2.0", "id":1, "method":"state_getStorage", "params": ["3a636f6465"] }'
 //! ```
 //!
 //! If you want to try submitting a transaction, you can use the following:
@@ -194,12 +194,7 @@ use log::info;
 use parity_scale_codec::{Compact, Decode, Encode};
 use sp_api::impl_runtime_apis;
 use sp_core::{hexdisplay::HexDisplay, OpaqueMetadata, H256};
-use sp_runtime::{
-	create_runtime_str, generic,
-	traits::{BlakeTwo256, Block as BlockT, Hash},
-	transaction_validity::{TransactionSource, TransactionValidity, ValidTransactionBuilder},
-	ApplyExtrinsicResult, ExtrinsicInclusionMode,
-};
+use sp_runtime::{create_runtime_str, generic, traits::{BlakeTwo256, Block as BlockT, Hash}, transaction_validity::{TransactionSource, TransactionValidity, ValidTransactionBuilder}, ApplyExtrinsicResult, DispatchError, ExtrinsicInclusionMode};
 use sp_version::RuntimeVersion;
 
 /// The key to which [`Call::SetValue`] will write the value.
@@ -232,6 +227,41 @@ type AccountId = sp_core::sr25519::Public;
 enum Call {
 	SetValue { value: u32 },
 	UpgradeCode { code: Vec<u8> },
+	Balance(BalanceCall), // FIXME-02
+	Vote(VoteCall), // FIXME-03
+}
+
+// FIXME-02
+#[derive(
+	Debug, Encode, Decode, TypeInfo, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+enum BalanceCall {
+	Mint { dest: u32, amount: u32 },
+	Transfer { src: u32, dest: u32, amount: u32 },
+}
+
+// FIXME-02
+#[allow(unused)]
+fn balance_map_key(key: u32) -> Vec<u8> {
+	let mut final_key = b"BalancesMap".to_vec();
+	final_key.extend(key.encode());
+	final_key
+}
+
+// FIXME-03
+#[derive(
+	Debug, Encode, Decode, TypeInfo, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+enum VoteCall {
+	Vote { src: u32, amount: u32 },
+}
+
+// FIXME-03
+#[allow(unused)]
+fn vote_map_key(key: u32) -> Vec<u8> {
+	let mut final_key = b"VoteMap".to_vec();
+	final_key.extend(key.encode());
+	final_key
 }
 
 #[derive(TypeInfo, Clone, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
@@ -386,12 +416,40 @@ impl Runtime {
 	// - note extrinsic
 	pub(crate) fn do_apply_extrinsic(ext: <Block as BlockT>::Extrinsic) -> ApplyExtrinsicResult {
 		let dispatch_outcome = match ext.clone().function {
+			// FIXME-01
 			Call::SetValue { value } => {
 				let _ = Self::mutate_state(VALUE_KEY, |current| {
 					*current = value;
 				});
 				Ok(())
 			},
+
+			// FIXME-02
+			Call::Balance(BalanceCall::Mint {dest, amount}) => {
+				Self::mutate_state::<u32>(&balance_map_key(dest), |x| {
+					*x = *x + amount
+				});
+				Ok(())
+			},
+
+			// FIXME-03
+			Call::Balance(BalanceCall::Transfer {src, dest, amount}) => {
+				let src_balance = Self::get_state::<u32>(&balance_map_key(src)).unwrap_or_default();
+				if src_balance < amount {
+					Err(DispatchError::Other("not enough funds"))
+				} else {
+
+				Self::mutate_state::<u32>(&balance_map_key(src), |x| {
+					*x = *x - amount
+				});
+				Self::mutate_state::<u32>(&balance_map_key(dest), |x| {
+					*x = *x + amount
+				});
+
+				Ok(())
+				}
+			}
+
 			_ => Ok(()),
 		};
 
@@ -772,24 +830,27 @@ mod tests {
 
 	#[test]
 	fn mint_balance_works() {
-		/*
 		// FIXME-02: Uncomment after implementing `BalanceCall::Mint`.
 		let mut state = TestExternalities::new_empty();
 		let alice = 100;
 
-		let ext = SignedExtrinsic::new(Call::Balance(BalanceCall::Mint {dest: alice, amount: 1000}), None).unwrap();
+		let ext = SignedExtrinsic::new(
+			Call::Balance(BalanceCall::Mint { dest: alice, amount: 1000 }),
+			None,
+		)
+		.unwrap();
 		state.execute_with(|| assert_eq!(Runtime::get_state::<u32>(&balance_map_key(alice)), None));
 
 		// include extrinsic
 		let _block = author_block(vec![ext], &mut state);
-		state.execute_with(|| assert_eq!(Runtime::get_state::<u32>(&balance_map_key(alice)), Some(1000)));
-		*/
+		state.execute_with(|| {
+			assert_eq!(Runtime::get_state::<u32>(&balance_map_key(alice)), Some(1000))
+		});
 	}
 
 	#[test]
 	fn transfer_balance_works() {
 		// FIXME-03: Uncomment after implementing `BalanceCall::Transfer`.
-		/*
 		let mut state = TestExternalities::new_empty();
 		let alice = 100;
 		let bob = 200;
@@ -828,6 +889,5 @@ mod tests {
 			// Bob has 300
 			assert_eq!(Runtime::get_state::<u32>(&balance_map_key(bob)), Some(300));
 		});
-		 */
 	}
 }
